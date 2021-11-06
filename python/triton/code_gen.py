@@ -33,6 +33,7 @@ class CodeGenerator(ast.NodeVisitor):
         else:
             raise ValueError(f'{name} is not defined')
         if isinstance(ret, triton.language.block):
+            print(self.lscope)
             handle = self.module.get_value(name)
             return triton.language.block(handle)
         return ret
@@ -92,6 +93,7 @@ class CodeGenerator(ast.NodeVisitor):
         return ret
 
     def visit_FunctionDef(self, node, inline=False, arg_values=None):
+        print(node.name)
         arg_names, kwarg_names = self.visit(node.args)
         # store keyword arguments in local scope
         self.lscope[kwarg_names] = self.kwargs
@@ -761,12 +763,13 @@ class JITFunction:
         self.cache_key += compute_capability()
         self.cache_key = hashlib.md5(self.cache_key.encode("utf-8")).hexdigest()
 
-    def __init__(self, fn, version=None, do_not_specialize=None):
+    def __init__(self, fn, version=None, inline=True, do_not_specialize=None):
         # information of wrapped function
         self.fn = fn
         self.module = fn.__module__
         self.arg_names = inspect.getfullargspec(fn).args
         self.version = version
+        self.inline = inline
         self.src = textwrap.dedent(inspect.getsource(fn))
         self.do_not_specialize = [] if do_not_specialize is None else\
                                  [self.arg_names.index(arg) for arg in do_not_specialize]
@@ -800,8 +803,9 @@ class JITFunction:
             gscope = generator.gscope.copy()
             lscope = generator.lscope.copy()
             values = generator.module.get_values().copy()
+            generator.lscope = dict()
             generator.gscope = sys.modules[self.fn.__module__].__dict__
-            ret = generator.visit_FunctionDef(self.parse().body[0], inline=True, arg_values=args)
+            ret = generator.visit_FunctionDef(self.parse().body[0], inline=self.inline, arg_values=args)
             generator.gscope = gscope
             generator.lscope = lscope
             generator.module.set_values(values)
