@@ -148,7 +148,7 @@ struct scanline_layout: public distributed_layout {
   // accessor
   int mts(size_t k) { return mts_.at(k); }
   int nts(size_t k) { return nts_.at(k); }
-
+  int per_thread(size_t k) { return nts(k) * shape_[k] / shape_per_cta(k);}
 public:
   // micro tile size. The size of a tile held by a thread block.
   std::vector<int> mts_;
