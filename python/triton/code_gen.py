@@ -131,7 +131,6 @@ class CodeGenerator(ast.NodeVisitor):
             pass
         else:
             fn_name = mangle_fn(node.name, self.prototype.arg_tys)
-            print(fn_name)
             fn = self.module.get_or_insert_function(fn_name, self.prototype)
             arg_values = []
             for i, arg_name in enumerate(arg_names):
@@ -168,7 +167,7 @@ class CodeGenerator(ast.NodeVisitor):
             if not has_ret:
                 self.builder.ret_void()
             else:
-                self.module.reset_ret_ty(node.name, self.last_ret.type)
+                self.module.reset_ret_ty(fn_name, self.last_ret.type)
             # self.module.reset_ret_type(node.name)
             self.builder.set_insert_block(insert_pt)
             
@@ -463,9 +462,8 @@ class CodeGenerator(ast.NodeVisitor):
             # if fn.inline:
             #     return ret
             arg_vals = [arg.handle for arg in args]
-            arg_tys = [arg.type for arg in args]
+            arg_tys = [arg.dtype.handle(self.builder) for arg in args]
             fn_name = mangle_fn(fn.__name__, arg_tys)
-            print(fn_name)
             symbol = self.module.get_function(fn_name)
             ret = self.builder.call(symbol, arg_vals)
             return ret
