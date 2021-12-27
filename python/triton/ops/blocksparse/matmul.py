@@ -12,7 +12,7 @@ import torch
 # ********************************************************
 
 @triton.heuristics({
-    'EVEN_K': lambda *args, **meta: args[15] % meta['TILE_K'] == 0,
+    'EVEN_K': lambda nargs: nargs['K'] % nargs['TILE_K'] == 0,
 })
 @triton.jit
 def _sdd_kernel(
@@ -107,6 +107,7 @@ def sdd_matmul(a, b, trans_a, trans_b, trans_c, spdims, block, lut, widths, out 
 
 def sdd_lut(layout, block, device):
     lut = layout.nonzero(as_tuple=False).to(device).int()
+    lut = lut.contiguous()
     return lut, None
 
 # -----------------------------

@@ -69,7 +69,7 @@ def _test_unary(dtype_x, expr, torch_expr=None, device='cuda'):
     triton.testing.assert_almost_equal(z_ref, z_tri)
 
 
-def _test_binary(dtype_x, dtype_y, expr, mode_x='real', mode_y='real', device='cuda'):
+def _test_binary(dtype_x, dtype_y, expr, torch_expr=None, mode_x='real', mode_y='real', device='cuda'):
     SIZE = 128
     # define the kernel / launch-grid
     @triton.jit
@@ -82,12 +82,12 @@ def _test_binary(dtype_x, dtype_y, expr, mode_x='real', mode_y='real', device='c
 
     kernel = patch_kernel(kernel, {'GENERATE_TEST_HERE': expr})
     # inputs
-    x = triton.testing.random(SIZE, dtype=cvt[dtype_x], device=device)
-    y = triton.testing.random(SIZE, dtype=cvt[dtype_y], device=device)
+    x = triton.testing.random(SIZE, dtype=cvt[dtype_x], device=device, seed=17)
+    y = triton.testing.random(SIZE, dtype=cvt[dtype_y], device=device, seed=144)
     if mode_x == 'nan': x[:] = float('nan')
     if mode_y == 'nan': y[:] = float('nan')
     # reference result
-    z_ref = eval(expr)
+    z_ref = eval(expr if torch_expr is None else torch_expr)
     # triton result
     z_tri = torch.empty(SIZE, dtype=z_ref.dtype, device=device)
     kernel[(1, )](z_tri, x, y, SIZE=SIZE, num_warps=4)
@@ -95,17 +95,56 @@ def _test_binary(dtype_x, dtype_y, expr, mode_x='real', mode_y='real', device='c
     triton.testing.assert_almost_equal(z_ref, z_tri, err_msg=expr)
 
 
+def _fake_fmod(x, y):
+    """
+    Triton % (for both integers and floats) has the same semantics as torch
+    fmod, but torch fmod doesn't work on integers until torch 1.8.
+    `_fake_fmod` gives the same semantics but works on all versions of torch.
+    """
+    z = torch.remainder(x, y)
+    return torch.where((torch.sign(x) != torch.sign(y)) & (z != 0), z - y, z)
+
+
+def _mod_operation_ill_conditioned(dtype_x, dtype_y) -> bool:
+    # The result of x % y is ill-conditioned if x % y is much smaller than x.
+    # pytorch/CUDA has slightly different (probably better) rounding on
+    # remainders than stock LLVM. We currently don't expect to match it
+    # bit-for-bit.
+    return (dtype_x, dtype_y) in [
+        ('int32', 'float16'),
+        ('int32', 'float32'),
+        ('int64', 'float16'),
+        ('int64', 'float32'),
+        ('int64', 'float64'),
+    ]
+
 # ---------------
 # test binary ops
 # ---------------
-@pytest.mark.parametrize("dtype_x, dtype_y, expr", [
-    (dtype_x, dtype_y, f' x {op} y') \
-  for op in ['+', '-', '*', '/', '%'] \
-  for dtype_x in dtypes \
+@pytest.mark.parametrize("dtype_x, dtype_y, op", [
+    (dtype_x, dtype_y, op)
+  for op in ['+', '-', '*', '/', '%']
+  for dtype_x in dtypes
   for dtype_y in dtypes
 ])
-def test_bin_op(dtype_x, dtype_y, expr, device='cuda'):
-    _test_binary(dtype_x, dtype_y, expr, device=device)
+def test_bin_op(dtype_x, dtype_y, op, device='cuda'):
+    expr = f' x {op} y'
+    if op == '%' and dtype_x in int_dtypes and dtype_y in int_dtypes:
+        # LLVM has 'torch.fmod', not 'torch.remainder' semantics on integer remainders.
+        torch_expr = '_fake_fmod(x, y)'
+    elif op in ('/', '%') and dtype_x in ('int16', 'float16') and dtype_y in ('int16', 'float16'):
+        # Triton promotes 16-bit floating-point / and % to 32-bit because there
+        # are no native div or FRem operations on float16. Since we have to
+        # convert anyway, we may as well take the accuracy bump.
+        torch_expr = f'x.to(torch.float32) {op} y.to(torch.float32)'
+    else:
+        torch_expr = None
+    if op == '%' and _mod_operation_ill_conditioned(dtype_x, dtype_y):
+        with pytest.raises(AssertionError, match='Arrays are not almost equal'):
+            _test_binary(dtype_x, dtype_y, expr, torch_expr=torch_expr, device=device)
+    else:
+        _test_binary(dtype_x, dtype_y, expr, torch_expr=torch_expr, device=device)
+
 
 
 # ---------------
@@ -339,7 +378,8 @@ def test_atomic_rmw(op, dtype_x, mode, device='cuda'):
     ('float32', 'int32', True)
 ])
 def test_cast(dtype_x, dtype_z, bitcast, device='cuda'):
-    x = torch.tensor([43.5], dtype=cvt[dtype_x], device=device)
+    x0 = 43 if dtype_x.startswith('int') else 43.5
+    x = torch.tensor([x0], dtype=cvt[dtype_x], device=device)
 
     # triton kernel
     @triton.jit
@@ -455,8 +495,8 @@ def test_permute(dtype, shape, perm, device='cuda'):
 # test dot
 # ---------------
 
-@pytest.mark.parametrize("epilogue", ['none', 'add-matrix', 'add-rows', 'add-cols'])
-def test_dot(epilogue, device='cuda'):
+@pytest.mark.parametrize("epilogue", ['none', 'trans', 'add-matrix', 'add-rows', 'add-cols'])
+def test_dot(epilogue, dtype=torch.float32, device='cuda'):
     torch.manual_seed(0)
     # triton kernel
     @triton.jit
@@ -483,11 +523,13 @@ def test_dot(epilogue, device='cuda'):
         tl.store(Zs, z)
     # input
     M, N, K = 64, 64, 32
-    x = triton.testing.random((M, K), dtype=torch.float16, device=device)
-    y = triton.testing.random((K, N), dtype=torch.float16, device=device)
+    x = triton.testing.random((M, K), dtype=dtype, device=device)
+    y = triton.testing.random((K, N), dtype=dtype, device=device)
     # triton result
-    z = triton.testing.random((M, N), dtype=torch.float16, device=device)
+    z = triton.testing.random((M, N), dtype=dtype, device=device)
     z_tri = z.clone()
+    if epilogue == 'trans':
+        z_tri = torch.as_strided(z_tri, (M, N), z_tri.stride()[::-1])
     pgm = kernel[(1, 1)](x, x.stride(0), x.stride(1),
                          y, y.stride(0), y.stride(1),
                          z_tri, z_tri.stride(0), z_tri.stride(1),
@@ -505,10 +547,9 @@ def test_dot(epilogue, device='cuda'):
         z_ref += z[0,:][None, :]
     z_ref = z_ref.to(torch.float16)
     # compare
-    ptx = pgm.asm['ptx']
-    # print(ptx)
     triton.testing.assert_almost_equal(z_tri, z_ref)
     # make sure ld/st are vectorized
+    ptx = pgm.asm['ptx']
     assert 'ld.global.v4' in ptx
     assert 'st.global.v4' in ptx
 
@@ -633,6 +674,28 @@ def test_load_cache_modifier(cache):
 # ---------------
 # test while
 # ---------------
+
+# ---------------
+# test default
+# ---------------
+#TODO: can't be local to test_default
+@triton.jit
+def _impl(value = 10):
+    return value
+
+def test_default():
+    value = 5
+    ret0 = torch.zeros(1, dtype=torch.int32, device='cuda')
+    ret1 = torch.zeros(1, dtype=torch.int32, device='cuda')
+
+    @triton.jit
+    def _kernel(ret0, ret1, value):
+        tl.store(ret0, _impl())
+        tl.store(ret1, _impl(value))
+    
+    _kernel[(1,)](ret0, ret1, value)
+    assert ret0.item() == 10
+    assert ret1.item() == value
 
 # ---------------
 # test noop

@@ -87,7 +87,7 @@ Value* geper::operator()(Value *ptr, Value* off, const std::string& name){
 #define void_ty              builder_->getVoidTy()
 #define f16_ty               builder_->getHalfTy()
 #define f32_ty               builder_->getFloatTy()
-#define i8_ty               builder_->getInt8Ty()
+#define i8_ty                builder_->getInt8Ty()
 #define i32_ty               builder_->getInt32Ty()
 #define vec_ty(type, num_el) VectorType::get(type, num_el, false)
 #define ptr_ty(...)          PointerType::get(__VA_ARGS__)
@@ -172,8 +172,8 @@ Type *generator::cvt(ir::type *ty) {
     case ir::type::FP8TyID:       return Type::getInt8Ty(*ctx_);
     case ir::type::FP16TyID:      return Type::getHalfTy(*ctx_);
     case ir::type::BF16TyID:      return Type::getInt16Ty(*ctx_);
-    case ir::type::FP32TyID:     return Type::getFloatTy(*ctx_);
-    case ir::type::FP64TyID:    return Type::getDoubleTy(*ctx_);
+    case ir::type::FP32TyID:      return Type::getFloatTy(*ctx_);
+    case ir::type::FP64TyID:      return Type::getDoubleTy(*ctx_);
     case ir::type::LabelTyID:     return Type::getLabelTy(*ctx_);
     case ir::type::MetadataTyID:  return Type::getMetadataTy(*ctx_);
     case ir::type::TokenTyID:     return Type::getTokenTy(*ctx_);
@@ -824,8 +824,9 @@ void generator::visit_cat_inst(ir::cat_inst* x) {
   ir::value* lhs = x->get_operand(0);
   ir::value* rhs = x->get_operand(1);
   int i = 0;
-  for(size_t j = 0; j < idxs_.at(lhs).size(); j ++)
+  for(size_t j = 0; j < idxs_.at(lhs).size(); j ++){
     vals_[x][idxs_[x][i++]] = vals_[lhs][idxs_[lhs][j]];
+  }
   for(size_t j = 0; j < idxs_.at(rhs).size(); j ++){
     vals_[x][idxs_[x][i++]] = vals_[rhs][idxs_[rhs][j]];
   }
@@ -1700,13 +1701,17 @@ void generator::visit_fmadot(ir::dot_inst* C, ir::value* A, ir::value* B, ir::va
 
   std::map<indices_t, Value*> ret = vals_[D];
   std::map<std::pair<int, int>, Value*> has, hbs;
+  auto ord = layout_c->get_order();
   for(unsigned k = 0; k < NK; k++){
     int z = 0;
-    for(unsigned m = 0; m < shape_c[0]; m += layout_c->shape_per_cta(0))
-    for(unsigned n = 0; n < shape_c[1]; n += layout_c->shape_per_cta(1))
-    for(unsigned mm = 0; mm < layout_c->nts(0); mm++)
-    for(unsigned nn = 0; nn < layout_c->nts(1); nn++)
-    {
+    for(unsigned i = 0; i < shape_c[ord[1]]; i += layout_c->shape_per_cta(ord[1]))
+    for(unsigned j = 0; j < shape_c[ord[0]]; j += layout_c->shape_per_cta(ord[0]))
+    for(unsigned ii = 0; ii < layout_c->nts(ord[1]); ii++)
+    for(unsigned jj = 0; jj < layout_c->nts(ord[0]); jj++){
+      unsigned m = (ord[0] == 1) ? i : j;
+      unsigned n = (ord[0] == 1) ? j : i;
+      unsigned mm = (ord[0] == 1) ? ii : jj;
+      unsigned nn = (ord[0] == 1) ? jj : ii;
       if(has.find({m + mm, k}) == has.end()){
         Value* pa = gep(ptrs_a[0], i32((m + mm)*stride_a_m + k*stride_a_k));
         Value* va = load(pa);
@@ -1927,6 +1932,7 @@ void generator::visit_reduce_inst(ir::reduce_inst* x) {
     case ir::reduce_inst::FSUB: return fsub(x, y);
     case ir::reduce_inst::FMAX: return max_num(x, y);
     case ir::reduce_inst::FMIN: return min_num(x, y);
+    case ir::reduce_inst::XOR: return xor_(x, y);
     default: throw std::runtime_error("unreachable");
     }
   };
@@ -1941,6 +1947,7 @@ void generator::visit_reduce_inst(ir::reduce_inst* x) {
     case ir::reduce_inst::FSUB: neutral = ConstantFP::get(ty, 0); break;
     case ir::reduce_inst::FMAX: neutral = ConstantFP::get(ty, -INFINITY); break;
     case ir::reduce_inst::FMIN: neutral = ConstantFP::get(ty, INFINITY); break;
+    case ir::reduce_inst::XOR: neutral = neutral = ConstantInt::get(ty, 0); break;
     default: throw std::runtime_error("unreachable");
   }
   ir::value *arg = x->get_operand(0);

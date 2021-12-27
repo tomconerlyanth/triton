@@ -1,5 +1,6 @@
 import torch
 import os
+import triton._C.libtriton.triton as _triton
 from .code_gen import OutOfResources
 import subprocess
 import sys
@@ -89,14 +90,21 @@ def assert_allclose(x, y, tol=1e-2):
     assert allclose(x, y, tol)
 
 
-def random(shape, dtype, device):
-    torch.manual_seed(0)
+def random(shape, dtype, device, seed=0):
+    """
+    Override the seed in tests if you're calling this function twice and don't
+    want the same result for both calls.
+    """
+    torch.manual_seed(seed)
     if isinstance(shape, int):
         shape = (shape, )
     if dtype == torch.bool:
         return torch.randint(0, 2, shape, dtype=dtype, device=device)
     if dtype in [torch.int8, torch.int16, torch.int32, torch.int64]:
-        return torch.randint(1, 32, shape, dtype=dtype, device=device)
+        iinfo = torch.iinfo(dtype)
+        x = torch.randint(iinfo.min, iinfo.max, shape, dtype=dtype, device=device)
+        x[x == 0] = 1  # Hack. Never return zero so tests of division don't error out.
+        return x
     if dtype in [torch.float16, torch.float32, torch.float64]:
         return torch.normal(0, 1, shape, dtype=dtype, device=device)
     raise RuntimeError(f'Unknown dtype {dtype}')
@@ -313,3 +321,27 @@ def perf_report(benchmarks):
     """
     wrapper = lambda fn: Mark(fn, benchmarks)
     return wrapper
+
+def get_dram_gbps(backend=None, device=None):
+    ''' return DRAM bandwidth in GB/s '''
+    # assert backend == CUDA
+    if not backend:
+        backend = _triton.runtime.backend.CUDA
+    if not device:
+        device = torch.cuda.current_device()
+    mem_clock_khz = _triton.runtime.memory_clock_rate(backend, device)
+    bus_width = _triton.runtime.global_memory_bus_width(backend, device)
+    bw_gbps = mem_clock_khz * bus_width * 2 // 1024 // 1024 // 8 # In GB/s
+    return bw_gbps
+
+def get_max_tensorcore_tflops(backend, device):
+    num_subcores = _triton.runtime.num_sm(backend, device) * 4 # on recent GPUs
+    clock_rate = _triton.runtime.clock_rate(backend, device) # in kHz
+    # assume fp32 += fp16*fp16
+    cc = _triton.runtime.cc(backend, device)
+    if cc < 80:
+        ops_per_sub_core = 256 # 2 4x4x4 Tensor Cores
+    else:
+        ops_per_sub_core = 512
+    tflops = num_subcores * clock_rate * ops_per_sub_core / (1024*1024*1024)
+    return tflops
