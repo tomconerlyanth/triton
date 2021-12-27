@@ -138,6 +138,9 @@ public:
   value *create_store(value *ptr, value *val);
   value *create_masked_load(value *arg, value *mask, value *false_value, load_inst::CACHE_MODIFIER cache);
   value *create_masked_store(value *ptr, value *val, value *mask);
+  // Struct instructions
+  value *create_insert_value(value* val, value *elt, size_t idx);
+  value *create_extract_value(value* val, size_t idx);
   // Block instruction
   value *create_splat(value *arg, const type::block_shapes_t &shapes);
   value *create_reshape(value *arg, const type::block_shapes_t &shapes);

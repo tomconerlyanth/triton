@@ -32,7 +32,8 @@ public:
   std::map<std::pair<type*, unsigned>, pointer_type*> ptr_tys;
   // Block types
   std::map<std::pair<type*, type::block_shapes_t>, block_type*> block_tys;
-
+  // Struct types
+  std::map<type::contained_tys_vec_t, struct_type*> struct_tys;
   // Int constants
   std::map<std::pair<type*, uint64_t>, constant_int*> int_constants_;
   // Float constants
