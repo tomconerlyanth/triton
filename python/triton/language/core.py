@@ -357,6 +357,9 @@ class constexpr:
     def __bool__(self):
         return bool(self.value)
 
+    def __repr__(self) -> str:
+        return repr(self.value)
+
     def __call__(self, *args, **kwds):
         return self.value(*args, **kwds)
 

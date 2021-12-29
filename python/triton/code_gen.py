@@ -45,10 +45,12 @@ def mangle_ty(type):
         return f'{elt}S{shape}S'
     assert False, "Unsupport type"
 
-def mangle_fn(name, arg_tys):
-    mangled_arg_names = '_'.join([mangle_ty(ty) for ty in arg_tys])
+def mangle_fn(name, arg_tys, constants):
     # doesn't mangle ret type, which must be a function of arg tys
-    return f'{name}__{mangled_arg_names}'
+    mangled_arg_names = '_'.join([mangle_ty(ty) for ty in arg_tys])
+    mangled_constants = '_'.join([f'{i}c{constants[i]}' for i in sorted(constants)])
+    mangled_constants.replace('.','x')
+    return f'{name}__{mangled_arg_names}__{mangled_constants}'
 
 
 class CodeGenerator(ast.NodeVisitor):
@@ -143,7 +145,7 @@ class CodeGenerator(ast.NodeVisitor):
                 init_node = ast.AnnAssign(target=st_target, value=default_value, annotation=annotation)
             self.visit(init_node)
         # initialize function
-        fn_name = mangle_fn(node.name, self.prototype.arg_tys)
+        fn_name = mangle_fn(node.name, self.prototype.arg_tys, self.constants)
         fn = self.module.get_or_insert_function(fn_name, self.prototype)
         arg_values = []
         idx = 0
@@ -527,7 +529,6 @@ class CodeGenerator(ast.NodeVisitor):
                     new_arg = triton.language.core._to_ir(arg, self.builder)
                     args[i] = triton.language.block(new_arg)
             # generate function def
-            # ret = fn(*args, generator=self, **kws)
             attributes = dict()
             constants = {i: args[i] for i in fn.constexprs}
             arg_types = [arg.handle.type for i, arg in enumerate(args) if i not in fn.constexprs]
@@ -540,7 +541,7 @@ class CodeGenerator(ast.NodeVisitor):
             args = [arg for i, arg in enumerate(args) if i not in fn.constexprs]
             arg_vals = [arg.handle for arg in args]
             arg_tys = [arg.type for arg in arg_vals]
-            fn_name = mangle_fn(fn.__name__, arg_tys)
+            fn_name = mangle_fn(fn.__name__, arg_tys, constants)
             symbol = self.module.get_function(fn_name)
             ret = self.builder.call(symbol, arg_vals)
             return ret
@@ -742,6 +743,7 @@ class Kernel:
 
     def add_to_cache(self, key, wargs, device_idx, num_warps, num_stages):
         tensor_idxs = [i for i, arg in enumerate(wargs) if hasattr(arg, 'data_ptr')]
+
         # attributes
         args = [arg.data_ptr() if i in tensor_idxs else arg for i, arg in enumerate(wargs)]
         attributes = {i: Kernel.pow2_divisor(a) for i, a in enumerate(args) \
@@ -757,7 +759,6 @@ class Kernel:
         cache_dir = os.environ.get('TRITON_CACHE_DIR', '/tmp/triton/')
         if cache_dir and not os.path.exists(cache_dir):
             os.makedirs(cache_dir, exist_ok=True)
-
         if cache_dir:
             bin_cache_path = os.path.join(cache_dir, hashed_key)
             bin_lock_path = bin_cache_path + ".lock"
