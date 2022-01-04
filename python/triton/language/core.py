@@ -877,3 +877,25 @@ def swizzle2d(i, j, size_i, size_j, size_g):
     new_i = off_i + (ij % size_g)
     new_j = (ij % size_gj) // size_g
     return new_i, new_j
+
+# -----------------------
+# Dynamic Parallelism
+# -----------------------
+
+class LaunchProxy:
+
+    def __init__(self, fn, args, constants, grid, num_warps) -> None:
+        self.args = args
+        self.grid = grid
+        self.constants = constants
+        self.num_warps = num_warps
+        self.fn = fn
+
+@builtin
+def launch(fn, args, grid, num_warps=None, _builder=None):
+    constants = {i: x for i, x in enumerate(args) if isinstance(x, constexpr)}
+    args = [_to_ir(x, builder=_builder) for x in args]
+    grid = [_to_ir(x, builder=_builder) for x in grid]
+    if num_warps is None:
+        num_warps = _to_ir(4, builder=_builder)
+    return LaunchProxy(fn, args, constants, grid, num_warps)
