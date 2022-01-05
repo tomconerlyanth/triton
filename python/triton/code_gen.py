@@ -90,7 +90,7 @@ class CodeGenerator(ast.NodeVisitor):
                 break
         return stmts and isinstance(stmt, ast.Return)
 
-    def __init__(self, context, prototype, gscope, attributes, constants, module = None):
+    def __init__(self, context, prototype, gscope, attributes, constants, module = None, is_kernel = False):
         self.builder = _triton.ir.builder(context)
         self.value_constructor = _triton.ir.value_constructor(self.builder)
         self.module = _triton.ir.module('', self.builder) if module is None else module
@@ -100,6 +100,7 @@ class CodeGenerator(ast.NodeVisitor):
         self.attributes = attributes
         self.constants = constants
         self.last_node = None
+        self.is_kernel = is_kernel
         self.builtins = {
             'range': range,
             'min': triton.language.minimum,
@@ -149,6 +150,7 @@ class CodeGenerator(ast.NodeVisitor):
         # initialize function
         fn_name = mangle_fn(node.name, self.prototype.arg_tys, self.constants)
         fn = self.module.get_or_insert_function(fn_name, self.prototype)
+        fn.set_is_kernel(self.is_kernel)
         arg_values = []
         idx = 0
         for i, arg_name in enumerate(arg_names):
@@ -568,9 +570,10 @@ class CodeGenerator(ast.NodeVisitor):
             if not self.module.has_function(fn_name):
                 attributes = {i: list(arg.parent.get_attrs(arg))[0].value for i, arg in enumerate(ret.args) \
                         if isinstance(arg, _triton.ir.argument) and arg.parent.has_attr(i + 1) }
-                generator = CodeGenerator(self.builder.context, prototype, gscope, attributes, constants, module=self.module)
+                generator = CodeGenerator(self.builder.context, prototype, gscope, attributes, constants, module=self.module, is_kernel=True)
                 generator.visit(ret.fn.parse())
             symbol = self.module.get_function(fn_name)
+            # TODO: should ret.args not include any constants ?
             ret = self.builder.launch(symbol, ret.args, ret.grid, ret.num_warps)
         return ret
         # return fn(*args, **kws)
@@ -747,7 +750,7 @@ class Kernel:
         # generate Triton-IR
         # export symbols visible from self.fn into code-generator object
         gscope = self.fn.fn.__globals__
-        generator = CodeGenerator(context, prototype, gscope=gscope, attributes=attributes, constants=constants)
+        generator = CodeGenerator(context, prototype, gscope=gscope, attributes=attributes, constants=constants, is_kernel=True)
         try:
             generator.visit(self.fn.parse())
         except Exception as e:
