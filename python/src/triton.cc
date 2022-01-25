@@ -427,8 +427,10 @@ std::tuple<std::string, asm_map_t, int> cu_compile_ttir(const std::string& name,
                                                                uint64_t device, int num_warps, int num_stages,
                                                                asm_map_t &asm_map){
   llvm::LLVMContext ctx;
+  int n_shared_bytes;
   // device properties
   CUdevice dev = (CUdevice)device;
+  Py_BEGIN_ALLOW_THREADS
   size_t major = cuGetInfo<CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR>(dev);
   size_t minor = cuGetInfo<CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR>(dev);
   size_t cc = major*10 + minor;
@@ -436,7 +438,6 @@ std::tuple<std::string, asm_map_t, int> cu_compile_ttir(const std::string& name,
   drv::dispatch::cuDriverGetVersion(&version);
   // Triton-IR -> NVPTX LLVM-IR
   triton::codegen::nvidia_cu_target target(cc);
-  int n_shared_bytes;
   auto llvm = triton::codegen::add_passes_to_emit_bin(ir, ctx, &target, cc, num_warps, num_stages, n_shared_bytes);
   std::string tmp;
   llvm::raw_string_ostream llir(tmp);
@@ -452,6 +453,7 @@ std::tuple<std::string, asm_map_t, int> cu_compile_ttir(const std::string& name,
     py::bytes bytes(cubin);
     asm_map["cubin"] = bytes;
   }
+  Py_END_ALLOW_THREADS
   return std::make_tuple(name, asm_map, n_shared_bytes);
 }
 
@@ -600,8 +602,7 @@ void init_triton_ir(py::module &&m) {
 
   py::class_<ir::constant_int, ir::constant>(m, "constant_int")
       .def_property_readonly("value", &ir::constant_int::get_value)
-      .def("__int__", [](ir::constant_int *self) { return self->get_value(); })
-      .def("__bool__", [](ir::constant_int *self) { return self->get_value(); });
+      .def("__int__", [](ir::constant_int *self) { return self->get_value(); });
 
   py::class_<ir::constant_fp, ir::constant>(m, "constant_float")
       .def_property_readonly("value", &ir::constant_fp::get_value);
