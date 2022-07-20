@@ -694,6 +694,30 @@ def test_where(dtype):
 
     assert torch.all(torch.where(decide, a, b) == output)
 
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32, torch.int16, torch.int32])
+def test_pointer_where(dtype):
+    @triton.jit
+    def where_kernel(decide_ptr, a_ptr, b_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
+        offsets = tl.program_id(axis=0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
+        decide = tl.load(decide_ptr + offsets, mask=mask)
+        a_ptrs = a_ptr + offsets
+        b_ptrs = b_ptr + offsets
+        ptrs = tl.where(decide, a_ptrs, b_ptrs)
+        output = tl.load(ptrs, mask=mask)
+        tl.store(output_ptr + offsets, output, mask=mask)
+
+    N = 1_000
+    decide = torch.rand(N, device='cuda') > 0.5
+    a = torch.zeros(N, device='cuda', dtype=dtype)
+    b = torch.ones(N, device='cuda', dtype=dtype)
+    output = torch.empty_like(a)
+
+    grid = lambda meta: (triton.cdiv(N, meta['BLOCK_SIZE']),)
+    where_kernel[grid](decide, a, b, output, N, BLOCK_SIZE=1024)
+
+    assert torch.all(torch.where(decide, a, b) == output)
+
 
 def test_f8_f16_roundtrip():
     """Tests that converting an f8 to f16 and back to f8 doesn't change its value"""
